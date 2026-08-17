@@ -115,6 +115,25 @@ vi.mock("@/stores/window-overlay-store", () => {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspaceRouteLayout } from "./workspace-route-layout";
 
+/**
+ * `hostKey` stands in for ActiveTabHost's `${activeTabId}:${generation}` key:
+ * changing it makes React unmount the current layout and mount a fresh one in
+ * the same commit, exactly as opening or switching a tab does.
+ */
+function layoutTree(qc: QueryClient, hostKey: string) {
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter key={hostKey} initialEntries={["/acme/issues"]}>
+        <Routes>
+          <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
+            <Route path="*" element={<div data-testid="outlet" />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 function renderLayout() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -123,18 +142,12 @@ function renderLayout() {
   // synchronously — the real hook reads from cache.
   qc.setQueryData(["workspace-by-slug"], state.workspace);
   qc.setQueryData(["workspace-list"], state.wsList);
-  const result = render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/acme/issues"]}>
-        <Routes>
-          <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
-            <Route path="*" element={<div data-testid="outlet" />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
-  return { ...result, queryClient: qc };
+  const result = render(layoutTree(qc, "tab-1"));
+  return {
+    ...result,
+    queryClient: qc,
+    remountHost: (hostKey: string) => result.rerender(layoutTree(qc, hostKey)),
+  };
 }
 
 beforeEach(() => {
@@ -242,5 +255,31 @@ describe("WorkspaceRouteLayout workspace singleton lifecycle", () => {
     unmount();
 
     expect(state.currentSlug).toBe("other");
+  });
+
+  /**
+   * MUL-6293. Cmd/Ctrl+, opens Settings in a new tab, and the desktop keys its
+   * single tab host on the active tab id — so the layout remounts for the SAME
+   * workspace. Both instances carry the same slug, which made the outgoing
+   * cleanup's slug check pass and release the workspace the incoming tab had
+   * just adopted. The shell gates its chrome on that singleton, so the sidebar
+   * and the rest of the workspace chrome vanished until the next navigation.
+   */
+  it("keeps the singleton when the same workspace remounts in another tab", () => {
+    const { remountHost } = renderLayout();
+    expect(state.currentSlug).toBe("acme");
+
+    remountHost("tab-2");
+
+    expect(state.currentSlug).toBe("acme");
+  });
+
+  it("still releases the singleton when the remounted host unmounts for good", () => {
+    const { remountHost, unmount } = renderLayout();
+    remountHost("tab-2");
+
+    unmount();
+
+    expect(state.currentSlug).toBeNull();
   });
 });

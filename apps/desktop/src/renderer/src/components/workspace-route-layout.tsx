@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Outlet, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -15,6 +15,25 @@ import { WorkspacePresencePrefetch } from "@multica/views/layout";
 import { SourceBackfillModal } from "@multica/views/onboarding";
 import { useTabStore } from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
+
+/**
+ * Which mounted layout instance the platform workspace singleton belongs to.
+ *
+ * Desktop keeps exactly one tab host mounted and keys it on the active tab id,
+ * so opening a tab (Cmd/Ctrl+, → Settings) or switching tabs remounts this
+ * layout for the SAME workspace: React renders the incoming instance before it
+ * runs the outgoing one's cleanup, and both carry the same slug. Slug equality
+ * alone therefore cannot tell "the singleton is still mine" from "my successor
+ * already adopted it", and the outgoing cleanup released the workspace context
+ * out from under the tab that had just taken over — dropping the sidebar and
+ * every other workspace-scoped piece of shell chrome (MUL-6293).
+ *
+ * Ownership is claimed in a layout effect rather than in render because that is
+ * what orders the two: React runs a commit's layout effects before the passive
+ * cleanups of the trees the same commit deleted, so the incoming host already
+ * owns the singleton by the time the outgoing one asks whether to release it.
+ */
+let singletonOwner: object | null = null;
 
 /**
  * Desktop equivalent of apps/web/app/[workspaceSlug]/layout.tsx.
@@ -81,9 +100,26 @@ export function WorkspaceRouteLayout() {
   // while the deleted workspace is STILL in the list cache (the invalidation
   // refetch is a network round-trip). Without the guard we write the dead slug
   // straight back over the cleanup.
-  if (workspace && workspaceSlug && !isWorkspaceDeletePending(workspace.id)) {
-    setCurrentWorkspace(workspaceSlug, workspace.id);
+  const adoptedWsId =
+    workspace && workspaceSlug && !isWorkspaceDeletePending(workspace.id)
+      ? workspace.id
+      : null;
+  if (adoptedWsId && workspaceSlug) {
+    setCurrentWorkspace(workspaceSlug, adoptedWsId);
   }
+
+  // Claim the singleton for this instance (see `singletonOwner`). The write is
+  // repeated here so the claim and the value can never disagree: React can run
+  // this effect again without re-rendering — StrictMode's simulated remount
+  // does exactly that — and the release on the way in would otherwise leave
+  // the singleton null with no render scheduled to set it back.
+  // setCurrentWorkspace no-ops on slug equality, so the normal case is free.
+  const ownerRef = useRef<object>({});
+  useLayoutEffect(() => {
+    if (!adoptedWsId || !workspaceSlug) return;
+    setCurrentWorkspace(workspaceSlug, adoptedWsId);
+    singletonOwner = ownerRef.current;
+  }, [adoptedWsId, workspaceSlug]);
 
   const hasBeenSeen = useWorkspaceSeen(workspaceSlug, !!workspace);
 
@@ -114,17 +150,26 @@ export function WorkspaceRouteLayout() {
   // workspace switch React renders the incoming layout — which sets the
   // singleton to the NEW slug — before running the outgoing one's cleanup, so
   // an unguarded clear would wipe the workspace context that just arrived.
+  //
+  // The unmount path needs the second guard as well: a remount for the SAME
+  // workspace (new tab, tab switch) leaves both instances on one slug, where
+  // only ownership distinguishes the layout that still holds the singleton
+  // from the one whose successor has already taken it over (MUL-6293).
   useEffect(() => {
     if (!listReady) return;
     if (workspace) return;
     if (getCurrentSlug() !== workspaceSlug) return;
     setCurrentWorkspace(null, null);
+    singletonOwner = null;
   }, [listReady, workspace, workspaceSlug]);
 
   useEffect(() => {
+    const owner = ownerRef.current;
     return () => {
       if (getCurrentSlug() !== workspaceSlug) return;
+      if (singletonOwner !== owner) return;
       setCurrentWorkspace(null, null);
+      singletonOwner = null;
     };
   }, [workspaceSlug]);
 
