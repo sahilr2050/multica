@@ -79,3 +79,6 @@ data/
 __pycache__/
 *.pyc
 perf-report/
+
+# local self-host backups (DB dumps + uploads, never commit)
+backups/
