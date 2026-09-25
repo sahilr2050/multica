@@ -12,6 +12,7 @@ echo "1. Fetching the latest multica blueprint from GitHub..."
 # instead of producing a merge commit or diverging.
 git fetch origin main
 git rebase origin/main
+git push --force-with-lease fork multica-backup-setup
 
 echo "2. Downloading the newest Multica Docker images..."
 docker compose -f docker-compose.selfhost.yml pull
