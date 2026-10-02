@@ -1,11 +1,12 @@
 #!/bin/bash
 # Backup script for Multica database and uploads
+set -euo pipefail
 
-cd /Users/sahilp/Projects/Docker_Operated_Apps/multica || exit
+cd "$(dirname "$0")"
 
 # Create a backup directory with current timestamp
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-BACKUP_DIR="/Users/sahilp/Projects/Docker_Operated_Apps/multica/backups/$TIMESTAMP"
+BACKUP_DIR="$PWD/backups/$TIMESTAMP"
 mkdir -p "$BACKUP_DIR"
 
 echo "Backing up PostgreSQL Database..."
@@ -18,7 +19,7 @@ echo "Backing up Uploads..."
 docker run --rm -v multica_backend_uploads:/uploads -v "$BACKUP_DIR":/backup alpine tar czf /backup/uploads.tar.gz -C /uploads .
 
 echo "Cleaning up old backups (keeping only the last 20)..."
-ls -1dt /Users/sahilp/Projects/Docker_Operated_Apps/multica/backups/* 2>/dev/null | tail -n +21 | xargs rm -rf 2>/dev/null
+ls -1dt "$PWD"/backups/* 2>/dev/null | tail -n +21 | xargs rm -rf || true
 
 echo "Backup completed successfully!"
 echo "Files saved to: $BACKUP_DIR"
